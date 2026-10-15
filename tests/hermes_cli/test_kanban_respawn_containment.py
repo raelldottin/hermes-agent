@@ -315,3 +315,26 @@ def test_repeated_guard_ticks_record_one_event_per_reason(kanban_home, all_assig
             kbd.dispatch_once(conn, spawn_fn=spawns)
         assert _events(conn, tid, "respawn_guarded") == [{"reason": "rate_limit_cooldown", "actor": "dispatcher"}]
     assert spawns.calls == []
+
+
+def test_review_handoff_after_rate_limited_run_spawns_reviewer(kanban_home, all_assignees_spawnable, spawns,
+                                                               monkeypatch):
+    """#119070, review side: the implementer is rate-limited once (the reaper
+    stamps quota text on ``last_failure_error``), is retried, and hands off to
+    review. The handoff is forward progress, so the old stamp must not stop
+    the reviewer from spawning on the next tick."""
+    monkeypatch.setenv("HERMES_KANBAN_RATE_LIMIT_COOLDOWN_SECONDS", "0")
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="impl then review", assignee="worker")
+        kb.claim_task(conn, tid)
+        with kb.write_txn(conn):
+            kb._end_run(conn, tid, outcome="rate_limited", error=QUOTA_STAMP)
+            conn.execute("UPDATE tasks SET status='ready', claim_lock=NULL, claim_expires=NULL, "
+                         "worker_pid=NULL, last_failure_error=? WHERE id=?", (QUOTA_STAMP, tid))
+        retry = kb.claim_task(conn, tid)
+        assert kb.request_review(conn, tid, summary="done", expected_run_id=retry.current_run_id)
+        assert kb.get_task(conn, tid).last_failure_error is None
+        assert kbd.check_respawn_guard(conn, tid, lane="review") is None
+        kbd.dispatch_once(conn, spawn_fn=spawns)
+        assert _events(conn, tid, "respawn_guarded") == []
+    assert spawns.calls == [tid]

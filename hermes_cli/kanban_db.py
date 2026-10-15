@@ -1904,6 +1904,7 @@ def _end_run(
         (status or outcome, outcome, summary, error, _json_or_null(metadata), now, run_id),
     )
     conn.execute("UPDATE tasks SET current_run_id = NULL WHERE id = ?", (task_id,))
+    clear_stale_failure_stamp(conn, task_id, outcome)
     return run_id
 
 
@@ -4214,6 +4215,7 @@ from hermes_cli.kanban_db_workspace import (
 from hermes_cli.kanban_db_respawn import (
     _attribution,
     _has_sticky_block,
+    clear_stale_failure_stamp,
     _resume_status_from_events,
     retry_of,
 )

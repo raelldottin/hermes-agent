@@ -136,3 +136,16 @@ def _resume_status_from_events(conn: sqlite3.Connection, task_id: str) -> str:
         if payload.get(key) == "review":
             return "review"
     return "ready"
+
+
+# Run outcomes that move a card forward. Their run supersedes any quota stamp an
+# older run left on ``last_failure_error``, which ``blocker_auth`` would
+# otherwise keep matching, e.g. on the review handoff (#119070). ``blocked`` is
+# excluded: the block transition writes its own reason before ending the run.
+_FORWARD_PROGRESS_OUTCOMES = frozenset({"completed", "review_requested", "changes_requested"})
+
+
+def clear_stale_failure_stamp(conn: sqlite3.Connection, task_id: str, outcome: str) -> None:
+    """Drop ``last_failure_error`` when a run ends with forward progress."""
+    if outcome in _FORWARD_PROGRESS_OUTCOMES:
+        conn.execute("UPDATE tasks SET last_failure_error = NULL WHERE id = ?", (task_id,))
