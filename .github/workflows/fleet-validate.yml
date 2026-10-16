@@ -1,0 +1,58 @@
+name: Fleet validate
+
+# GitOps gate for the Tachikoma fleet (raelldottin fork only; see fleet/AGENTS.md).
+# Every change to fleet-stable, including a manifest change that releases a commit, must pass
+# this before it merges: the manifests are valid and the pinned code passes the lint gate and
+# the kanban suites the fleet depends on. Standard runners only (no 32-core labels on the fork).
+
+on:
+  pull_request:
+    branches: [fleet-stable]
+  push:
+    branches: [fleet-stable]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fleet-validate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    if: github.repository == 'raelldottin/hermes-agent'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@f548e57e544e1ff5a4c46bf1e1b8685f8e4a348a # v7.0.1
+        with:
+          fetch-depth: 0 # manifests pin commits; check needs their ancestry
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # 8.2.0
+        with:
+          version: "0.12.13"
+          enable-cache: true
+
+      - name: Sync locked environment
+        run: uv sync --locked --python 3.14 --extra all --group dev
+
+      - name: Manifests
+        run: uv run --no-sync python fleet/reconcile.py check
+
+      - name: Lint gate
+        # Judge the fork's patch set against the upstream commit it is based on.
+        run: |
+          git fetch --quiet --filter=blob:none https://github.com/NousResearch/hermes-agent main
+          uv run --no-sync python scripts/check --base "$(git merge-base HEAD FETCH_HEAD)"
+
+      - name: Fleet and kanban suites
+        env:
+          HERMES_PYTHON: ${{ github.workspace }}/.venv/bin/python
+        run: |
+          scripts/run_tests.sh tests/fleet/ \
+            tests/hermes_cli/test_kanban_respawn_containment.py \
+            tests/hermes_cli/test_kanban_respawn_process_boundaries.py \
+            tests/hermes_cli/test_kanban_db.py \
+            tests/e2e/core/kanban/
