@@ -1,0 +1,8 @@
+# Desired state for the isolated canary. Change it only by a PR into fleet-stable.
+environment = "canary"
+commit = "a833d92e906b9738aeac11418573c6d23ad5e41c"
+source_dir = "~/.hermes-fleet/canary"
+# Must stay outside ~/.hermes: any HERMES_HOME under it shares the production kanban root.
+hermes_home = "~/.hermes-canary"
+tag = "fleet-stable-2026.10.15-1"
+deploy = "enabled"
