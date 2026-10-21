@@ -4,6 +4,7 @@ Jittered delays (vs. fixed exponential) prevent thundering-herd retry spikes
 when many sessions hit the same rate-limited provider concurrently.
 """
 
+import math
 import random
 import re
 import threading
@@ -11,6 +12,7 @@ import time
 from datetime import datetime, timezone, UTC
 from email.utils import parsedate_to_datetime
 from typing import Any, Optional
+from urllib.parse import urlparse
 
 # Monotonic counter for jitter-seed uniqueness within a process; locked
 # because concurrent gateway sessions retry simultaneously.
@@ -44,12 +46,17 @@ def parse_retry_after_seconds(value_or_headers: Any) -> Optional[float]:
     if raw is None or isinstance(raw, bool):
         return None
     if isinstance(raw, (int, float)):
-        return max(0.0, float(raw))
+        try:
+            seconds = float(raw)
+        except (ValueError, OverflowError):
+            return None
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     text = str(raw).strip()
     if not text:
         return None
     try:
-        return max(0.0, float(text))
+        seconds = float(text)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except (TypeError, ValueError):
         pass
     # HTTP-date form (RFC 7231): seconds until that instant, clamped at 0.
@@ -156,8 +163,24 @@ def adaptive_rate_limit_backoff(
     attempt: int, *, base_url: str | None, model: str | None, error: Any, default_wait: float,
     short_attempts: int = _ZAI_CODING_OVERLOAD_SHORT_ATTEMPTS,
 ) -> tuple[float, str | None]:
-    """``(wait_seconds, reason_label)``: ``default_wait`` for most providers; Z.AI Coding GLM-5.2 overloads keep
+    """``(wait_seconds, reason_label)``: NIM 429s use jittered 30/60/120s windows;
+    ``default_wait`` for most providers; Z.AI Coding GLM-5.2 overloads keep
     ``short_attempts`` short retries, then 30→60→90→120s with light jitter. ``attempt`` is 1-based."""
+    status = getattr(error, "status_code", None)
+    if status is None:
+        status = getattr(getattr(error, "response", None), "status_code", None)
+    try:
+        host = urlparse(base_url or "").hostname
+    except ValueError:
+        host = None
+    if host == "integrate.api.nvidia.com" and status == 429:
+        # NIM's bare 429 carries no reset window. Seconds-long retries exhaust
+        # the turn in the same rate-limit window across concurrent workers.
+        windows = (30.0, 60.0, 120.0)
+        window = windows[min(max(attempt - 1, 0), len(windows) - 1)]
+        # jittered_backoff adds jitter after its base cap. Keep the combined
+        # wait within the window while still spreading simultaneous workers.
+        return jittered_backoff(1, base_delay=window * 0.8, max_delay=window, jitter_ratio=0.25), "nvidia_rate_limit"
     if not is_zai_coding_overload_error(base_url=base_url, model=model, error=error):
         return default_wait, None
     if attempt <= short_attempts:

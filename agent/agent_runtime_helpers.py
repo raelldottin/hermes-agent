@@ -1137,7 +1137,7 @@ def recover_with_credential_pool(
 def _apply_primary_runtime_fields(agent, rt: dict[str, Any]) -> None:
     """Copy the identity/transport fields of a ``_primary_runtime`` snapshot onto ``agent``
     (shared by transport recovery and turn-start restore; the caller rebuilds the client)."""
-    agent.model = rt["model"]
+    agent.model, agent.max_tokens = rt["model"], rt.get("max_tokens", getattr(agent, "max_tokens", None))
     agent.provider = rt["provider"]
     agent.requested_provider = rt.get("requested_provider", agent.provider)
     agent.base_url = rt["base_url"]           # setter updates _base_url_lower

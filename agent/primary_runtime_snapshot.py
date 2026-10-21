@@ -19,6 +19,7 @@ def _snapshot_primary_runtime(agent):
     _cc = agent.context_compressor
     agent._primary_runtime = {
         "model": agent.model,
+        "max_tokens": getattr(agent, "max_tokens", None),
         "provider": agent.provider,
         "requested_provider": agent.requested_provider,
         SNAPSHOT_OWNER_KEY: runtime_entry_owner(agent.provider, agent.requested_provider, agent.base_url),
@@ -51,6 +52,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> dict[str, Any]:
     cc = getattr(agent, "context_compressor", None) or None
     rt = {
         "model": agent.model,
+        "max_tokens": getattr(agent, "max_tokens", None),
         "provider": agent.provider,
         "requested_provider": agent.requested_provider,
         SNAPSHOT_OWNER_KEY: runtime_entry_owner(agent.provider, agent.requested_provider, agent.base_url),

@@ -1,12 +1,38 @@
 """Tests for agent.retry_utils jittered backoff."""
 
 import threading
-
-from agent import retry_utils
 from types import SimpleNamespace
 
+import pytest
+
+from agent import retry_utils
 from agent.retry_utils import adaptive_rate_limit_backoff, jittered_backoff
 from datetime import UTC
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), "NaN", "Infinity", "-Infinity", {"Retry-After": "inf"}])
+def test_retry_after_rejects_nonfinite_values(value):
+    assert retry_utils.parse_retry_after_seconds(value) is None
+
+
+@pytest.mark.real_retry_backoff
+@pytest.mark.parametrize("attempt,minimum,maximum", [(1, 24, 30), (2, 48, 60), (3, 96, 120), (10, 96, 120)])
+def test_nvidia_429_waits_for_a_meaningful_bounded_window(attempt, minimum, maximum):
+    error = SimpleNamespace(status_code=429, message="Too Many Requests")
+    wait, policy = adaptive_rate_limit_backoff(
+        attempt, base_url="https://integrate.api.nvidia.com/v1", model="nvidia/nemotron",
+        error=error, default_wait=2,
+    )
+    assert minimum <= wait <= maximum
+    assert policy == "nvidia_rate_limit"
+
+
+@pytest.mark.parametrize("url,status", [("https://integrate.api.nvidia.com.evil.test/v1", 429), ("https://other.test/v1", 429), ("https://integrate.api.nvidia.com/v1", 503)])
+def test_nvidia_policy_does_not_change_other_routes_or_errors(url, status):
+    wait, policy = adaptive_rate_limit_backoff(
+        1, base_url=url, model="nvidia/nemotron", error=SimpleNamespace(status_code=status), default_wait=2,
+    )
+    assert (wait, policy) == (2, None)
 
 
 def test_backoff_is_exponential():

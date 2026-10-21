@@ -8,6 +8,32 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 
+def fallback_token_budget(original: Any, entry: dict[str, Any] | None) -> Any:
+    """Apply a candidate's positive integer ceiling without increasing a caller budget."""
+    cap = entry.get("max_tokens") if isinstance(entry, dict) else None
+    if not isinstance(cap, int) or isinstance(cap, bool) or cap <= 0:
+        return original
+    if isinstance(original, int) and not isinstance(original, bool) and original > 0:
+        return min(original, cap)
+    return cap
+
+
+def bound_fallback_request(kwargs: dict[str, Any], ceiling: Any, *, native_gemini: bool = False) -> dict[str, Any]:
+    """Enforce a fallback budget after provider reasoning-headroom expansion."""
+    if not isinstance(ceiling, int) or isinstance(ceiling, bool) or ceiling <= 0:
+        return kwargs
+    keys = ("max_tokens", "max_completion_tokens", "max_output_tokens")
+    budget = ceiling
+    for key in keys:
+        value = kwargs.get(key)
+        if isinstance(value, int) and not isinstance(value, bool) and value > 0:
+            budget = min(budget, value)
+    bounded = {**kwargs, **{key: budget for key in keys if key in kwargs}}
+    if native_gemini:
+        bounded["max_output_tokens_ceiling"] = budget
+    return bounded
+
+
 def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
