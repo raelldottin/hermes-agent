@@ -26,6 +26,8 @@ from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.local_prompt_progress import (
     PromptReadingClock, current_prompt_reading_hook, prompt_progress, prompt_reading_hook, with_prompt_progress)
+from agent.auxiliary_fallback_chain import _fallback_chain_entry
+from hermes_cli.fallback_config import bound_fallback_request, fallback_token_budget
 from agent.error_classifier import (
     _BILLING_PATTERNS,
     _OVERLOADED_PATTERNS,
@@ -3915,22 +3917,6 @@ def _auth_refresh_provider_for_route(
     return host_provider or normalized
 
 
-def _fallback_chain_entry(task: Optional[str], fb_label: str) -> Optional[dict[str, Any]]:
-    """Resolve the ``fallback_chain`` entry a ``fallback_chain[<i>](<provider>)`` label points at,
-    or None when the label is not a configured-chain candidate or the index no longer resolves."""
-    if not task or not fb_label:
-        return None
-    m = re.match(r"fallback_chain\[(\d+)\]", fb_label)
-    if not m:
-        return None
-    try:
-        chain = _get_auxiliary_task_config(task).get("fallback_chain")
-        entry = chain[int(m.group(1))] if isinstance(chain, list) else None
-    except Exception:
-        return None
-    return entry if isinstance(entry, dict) else None
-
-
 def _coerce_positive_timeout(raw: Any) -> Optional[float]:
     """Coerce a config ``timeout`` to a positive float, or None (rejects bools, which are ints)."""
     if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > 0:
@@ -4025,20 +4011,21 @@ def _fallback_request_kwargs(
     fallback_entry: dict, task_config: dict, apply_fast_lane: bool,
 ) -> dict[str, Any]:
     """Build request kwargs for one fallback destination (cache-section replan + fast-lane cap)."""
-    fallback_max_tokens, fallback_extra_body = max_tokens, effective_extra_body
+    fallback_max_tokens, fallback_extra_body = fallback_token_budget(max_tokens, fallback_entry), effective_extra_body
     if apply_fast_lane:
         fallback_max_tokens, fallback_extra_body = _compression_fast_lane_controls(
             task, actual_provider=destination.provider, actual_model=destination.model,
             requested_provider=fallback_entry.get("provider"),
             requested_model=fallback_entry.get("model"), route_config=fallback_entry,
-            leak_guard_config=task_config, max_tokens=max_tokens, extra_body=effective_extra_body,
+            leak_guard_config=task_config, max_tokens=fallback_max_tokens, extra_body=effective_extra_body,
         )
     fallback_messages, fallback_tools = _replan_synchronous_cache_sections(messages, tools, destination=destination)
     fb_kwargs = _build_call_kwargs(
         destination.provider, destination.model, fallback_messages,
         temperature=temperature, max_tokens=fallback_max_tokens, tools=fallback_tools, timeout=effective_timeout,
         extra_body=fallback_extra_body, reasoning_config=reasoning_config, base_url=destination.base_url, task=task)
-    return fb_kwargs
+    from agent.gemini_native_adapter import is_native_gemini_base_url
+    return bound_fallback_request(fb_kwargs, fallback_max_tokens, native_gemini=is_native_gemini_base_url(destination.base_url))
 
 
 def _plan_fallback_candidate(

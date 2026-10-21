@@ -917,7 +917,7 @@ class GeminiNativeClient:
         self, *, model: str = "gemini-3.7-flash", messages: Optional[list[dict[str, Any]]] = None, stream: bool = False,
         tools: Any = None, tool_choice: Any = None, temperature: Optional[float] = None, max_tokens: Optional[int] = None,
         top_p: Optional[float] = None, stop: Any = None, response_format: Any = None, extra_body: Optional[dict[str, Any]] = None,
-        timeout: Any = None, **_: Any,
+        timeout: Any = None, max_output_tokens_ceiling: Optional[int] = None, **_: Any,
     ) -> Any:
         extra = extra_body if isinstance(extra_body, dict) else {}
         # Long-decode budget (Gemini 4, effort above high) raises the total cap; an explicit larger cap still wins.
@@ -930,6 +930,21 @@ class GeminiNativeClient:
             response_format=response_format or extra.get("response_format"), model=model,
             tools_as_json_schema=gemini_accepts_parameters_json_schema(self.base_url),
         )
+        if (isinstance(max_output_tokens_ceiling, int) and not isinstance(max_output_tokens_ceiling, bool)
+                and max_output_tokens_ceiling > 0):
+            # Fallback ceilings include thinking tokens. Ordinary calls retain
+            # automatic thinking headroom, while explicitly bounded routes do not.
+            generation = request["generationConfig"]
+            generation["maxOutputTokens"] = min(generation["maxOutputTokens"], max_output_tokens_ceiling)
+            thinking = generation.get("thinkingConfig")
+            flash = "flash" in model.lower()
+            if isinstance(thinking, dict):
+                budget = thinking.get("thinkingBudget")
+                if flash and max_output_tokens_ceiling < 256:
+                    thinking["thinkingBudget"] = 0
+                    thinking["includeThoughts"] = False
+                elif isinstance(budget, int) and budget > max_output_tokens_ceiling // 2:
+                    thinking["thinkingBudget"] = max_output_tokens_ceiling // 2
         model = bare_gemini_model_id(model)
         url = f"{self.base_url}/models/{model}:"
         if stream:

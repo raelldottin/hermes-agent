@@ -39,6 +39,27 @@ fallback_providers:
 
 Each entry requires both `provider` and `model`. Entries missing either field are ignored.
 
+Choose a backup on an independent provider. Repeating the primary provider and model
+does not protect against that provider's rate limits or outage.
+
+A fallback entry can also set a positive integer `max_tokens` to limit its output
+budget. Hermes uses the smaller of that limit and the original request budget;
+returning to the primary restores the original budget. Auxiliary task entries under
+`auxiliary.<task>.fallback_chain` support the same limit. For example:
+
+```yaml
+fallback_providers:
+  - provider: gemini
+    model: gemini-2.5-flash
+    key_env: GOOGLE_API_KEY
+    max_tokens: 16384
+```
+
+When NVIDIA NIM returns HTTP 429 without a reset hint and Hermes retries that route,
+the waits use jittered 24–30, 48–60, then 96–120 second windows. Explicit provider
+cooldowns take precedence, and waits remain interruptible. An available fallback
+can activate immediately instead of waiting on the rate-limited primary.
+
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 
 ```yaml

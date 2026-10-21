@@ -29,6 +29,7 @@ from hermes_constants import PARTIAL_STREAM_STUB_ID, FINISH_REASON_LENGTH
 from agent.error_classifier import (
     FailoverReason, PROVIDER_STREAM_EMPTY_FRAME_ERROR_CODE, PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     _extract_status_code)
+from agent.chat_completion_fallback import _reresolve_fallback_reasoning_config, apply_fallback_budget, bound_active_fallback, seed_primary_budget
 from agent.sdk_transform_bypass import bypass_chat_sdk_request_transform
 from agent.errors import EmptyStreamError
 from agent.chat_completion_local import _streams_llamacpp, stale_giveup
@@ -1512,7 +1513,7 @@ def build_api_kwargs(agent, api_messages: list, tools_for_api: list | None = Non
     """
     from agent.opencode_affinity import merge_session_affinity_headers
 
-    kwargs = _build_api_kwargs_for_mode(agent, api_messages, tools_for_api)
+    kwargs = bound_active_fallback(agent, agent._ephemeral_max_output_tokens if hasattr(agent, "_ephemeral_max_output_tokens") else None, _build_api_kwargs_for_mode(agent, api_messages, tools_for_api))
     return merge_session_affinity_headers(
         kwargs,
         getattr(agent, "provider", None),
@@ -2003,20 +2004,6 @@ def _update_fallback_context_compressor(agent) -> None:
         revalidate_compression_feasibility(agent)
 
 
-def _reresolve_fallback_reasoning_config(agent) -> None:
-    """Per-model override > global reasoning_effort (YAML False = disabled); a config load
-    failure keeps the current reasoning_config rather than killing the swap."""
-    try:
-        # Re-resolve reasoning_config for the new fallback model (Closes #21256). Wrapped in try/except
-        # because a config load failure must not kill the swap.
-        from hermes_cli.config import load_config
-        from hermes_constants import resolve_reasoning_config
-        agent.reasoning_config = resolve_reasoning_config(load_config() or {}, agent.model)
-        logger.info("Fallback %s: reasoning_config resolved: %s", agent.model, agent.reasoning_config)
-    except Exception as _reasoning_err:
-        logger.debug("Failed to resolve reasoning_config for fallback %s; keeping current: %s", agent.model, _reasoning_err)
-
-
 def _rescope_fallback_extra_body(agent, old_model: str, old_provider: str, old_base_url: str) -> None:
     """Drop the OLD provider's custom_providers-contributed extra_body keys, then merge the fallback
     provider's own. KEY-SCOPED: a key is dropped only if its value still equals what the old provider's
@@ -2060,6 +2047,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False
     cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
+    seed_primary_budget(agent)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)
@@ -2083,6 +2071,7 @@ def try_activate_fallback(agent, reason: FailoverReason | None = None, reset_at=
                 continue
             old_model, old_provider = bound
             fb_model = agent.model  # normalized by the binder
+            apply_fallback_budget(agent, fb)
             rewrite_prompt_model_identity(agent, fb_model, fb_provider)
 
             notice = (
