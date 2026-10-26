@@ -12,6 +12,72 @@ from agent.message_sanitization import (
 )
 from agent.transports.chat_completions import ChatCompletionsTransport
 
+
+@pytest.mark.parametrize("model", ["z-ai/glm-5.3", "Hermes Kanban"])
+def test_local_must_echo_uses_one_text_carrier_and_preserves_history(model):
+    route = reasoning_replay_route(
+        "chat_completions", "custom", model, "http://127.0.0.1:4000/v1",
+        echo_opt_in=True,
+    )
+    sources = [deepcopy(_TURN), deepcopy(_BARE)]
+    original = deepcopy(sources)
+    wire = deepcopy(sources)
+    for source, api_message in zip(sources, wire):
+        apply_reasoning_content_policy(source, api_message, route.pad, route.carriers)
+
+    assert route.pad
+    assert "reasoning" not in route.carriers
+    assert "reasoning_details" not in route.carriers
+    assert wire[0]["reasoning_content"] == "thought"
+    assert wire[1]["reasoning_content"] == " "
+    assert all("reasoning" not in message for message in wire)
+    assert sources == original
+
+
+def test_switch_to_local_must_echo_reconciles_existing_text_aliases():
+    route = reasoning_replay_route(
+        "chat_completions", "custom", "Hermes Kanban", "http://127.0.0.1:4000/v1",
+        echo_opt_in=True,
+    )
+    wire = [deepcopy(_TURN), deepcopy(_BARE)]
+    reapply_reasoning_echo(wire, route.pad, route.carriers)
+    assert wire[0]["reasoning_content"] == "thought"
+    assert wire[1]["reasoning_content"] == " "
+    assert all("reasoning" not in message for message in wire)
+
+
+def test_local_default_keeps_aliases_without_must_echo_opt_in():
+    route = reasoning_replay_route(
+        "chat_completions", "custom", "Hermes Kanban", "http://127.0.0.1:4000/v1",
+    )
+    assert not route.pad
+    assert {"reasoning_content", "reasoning"} == route.carriers
+
+
+def test_local_must_echo_keeps_explicit_native_details(monkeypatch):
+    monkeypatch.setattr(
+        "agent.message_sanitization._profile_declares_native_details", lambda provider: True,
+    )
+    route = reasoning_replay_route(
+        "chat_completions", "custom", "Hermes Kanban", "http://127.0.0.1:4000/v1",
+        echo_opt_in=True,
+    )
+    assert route.carriers == {"reasoning_content", "reasoning_details"}
+    wire = [deepcopy(_TURN)]
+    reapply_reasoning_echo(wire, route.pad, route.carriers)
+    assert wire[0]["reasoning_details"] == _DETAILS
+
+
+def test_must_echo_explicit_canonical_rejection_still_uses_strict_schema():
+    route = reasoning_replay_route(
+        "chat_completions", "custom", "Hermes Kanban", "http://127.0.0.1:4000/v1",
+        echo_opt_in=True,
+        rejected={"reasoning_content", "reasoning", "reasoning_details"},
+    )
+    assert not route.pad
+    assert not route.carriers
+
+
 _DETAILS = [{"type": "reasoning.text", "text": "thought"}]
 _TURN = {"role": "assistant", "content": "", "reasoning": "thought", "reasoning_content": "thought",
          "reasoning_details": _DETAILS,
@@ -136,6 +202,60 @@ def test_route_shaping_keeps_private_native_carrier_for_the_transport():
     wire = shape_wire_carriers([api], model="gemini-3.5-pro", base_url=base)[0]
     assert wire["extra_content"] == record["extra_content"]
     assert "reasoning_details" not in wire
+
+
+@pytest.mark.parametrize("quote", ["`", "'", '"'])
+def test_duplicate_reasoning_alias_retries_once_without_losing_content(tmp_path, quote):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("s1", source="cli", model="z-ai/glm-5.3")
+    lane = _agent("z-ai/glm-5.3", db)
+    lane.provider, lane.base_url = "custom", "http://127.0.0.1:4000/v1"
+    history = [deepcopy(_TURN)]
+    sent = deepcopy(history)
+    body = ("Nvidia_nimException - Failed to deserialize the JSON body into the target type: "
+            f"duplicate field {quote}reasoning_content{quote} at line 1 column 156865")
+
+    assert _recover(lane, body, sent) is True
+    assert rejected_reasoning_carriers(lane) == {"reasoning"}
+    route = reasoning_replay_route("chat_completions", lane.provider, lane.model, lane.base_url,
+                                  rejected=rejected_reasoning_carriers(lane))
+    reapply_reasoning_echo(sent, route.pad, route.carriers)
+    assert sent[0]["reasoning_content"] == "thought"
+    assert "reasoning" not in sent[0]
+    assert history == [_TURN]
+    assert _recover(lane, body, sent) is False
+    assert _recover(lane, body, deepcopy(history)) is False
+    # The learned exclusion survives resume and applies only to this exact route.
+    resumed = _agent(lane.model, db)
+    resumed.provider, resumed.base_url = lane.provider, lane.base_url
+    assert rejected_reasoning_carriers(resumed) == {"reasoning"}
+    resumed.model = "sibling-model"
+    assert not rejected_reasoning_carriers(resumed)
+
+
+@pytest.mark.parametrize("sent", [
+    [{"role": "assistant", "reasoning_content": "thought"}],
+    [{"role": "assistant", "reasoning": "thought"}],
+    [{"role": "assistant", "reasoning": "thought"},
+     {"role": "assistant", "reasoning_content": "thought"}],
+    [{"role": "user", "reasoning": "thought", "reasoning_content": "thought"}],
+])
+def test_duplicate_reasoning_alias_requires_both_fields_on_one_assistant(sent):
+    from agent.message_sanitization import rejected_reasoning_fields
+
+    assert not rejected_reasoning_fields("duplicate field `reasoning_content`", sent)
+
+
+@pytest.mark.parametrize("body", [
+    "duplicate field `content`", "duplicate field `reasoning_content_extra`",
+    "reasoning_content invalid value", "Provider returned error",
+])
+def test_other_errors_never_trigger_duplicate_alias_recovery(body):
+    from agent.message_sanitization import rejected_reasoning_fields
+
+    assert not rejected_reasoning_fields(body, [deepcopy(_TURN)])
 
 
 def test_value_complaint_never_strips_reasoning_content_from_a_must_echo_route():
