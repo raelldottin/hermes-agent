@@ -745,6 +745,11 @@ def reasoning_replay_route(
     if (api_mode or "chat_completions") != "chat_completions":
         return ReasoningReplayRoute(pad, None)
     carriers = route_reasoning_carriers(provider, base_url) - frozenset(rejected)
+    # Must-echo backends require the canonical text carrier. Some schemas alias
+    # `reasoning` to that same field and reject both as a duplicate, even through
+    # a local proxy. Keep native details while sending the text only once.
+    if pad and RC in carriers:
+        carriers = carriers - {R}
     # A strict route never gets a reasoning key, not even the must-echo pad.
     return ReasoningReplayRoute(pad and RC in carriers, carriers)
 
@@ -922,14 +927,22 @@ _NAMED_FIELD_RES = {
 
 
 def rejected_reasoning_fields(error_body: Any, sent_messages: Any) -> frozenset:
-    """Reasoning keys to drop after an unknown-field rejection that names one this request carried.
+    """Reasoning keys to drop after a schema rejection naming a carrier this request sent.
 
+    A duplicate canonical field with both text aliases sent only drops ``reasoning``.
     Strict schemas report one offending key per error, so the drop is widened to the keys the
     same schema will reject next: a rejected ``reasoning_details`` / ``reasoning`` takes the
     other non-standard carrier too (``reasoning_content`` still carries the text); a rejected
     ``reasoning_content`` (the most widely accepted alias) takes all three. One retry, not three.
     """
     body = str(error_body or "").lower()
+    # Some upstream schemas alias `reasoning` to `reasoning_content`, so sending both
+    # is a duplicate-field error despite unique JSON keys. Keep the canonical carrier.
+    if re.search(r"""duplicate field\s+([`'"])reasoning_content\1""", body) and any(
+        isinstance(msg, dict) and msg.get("role") == "assistant" and RC in msg and R in msg
+        for msg in (sent_messages if isinstance(sent_messages, list) else ())
+    ):
+        return frozenset({R})
     if not any(phrase in body for phrase in _UNKNOWN_FIELD_PHRASES):
         return frozenset()
     sent = {
