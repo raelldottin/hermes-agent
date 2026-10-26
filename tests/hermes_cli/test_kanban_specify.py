@@ -93,6 +93,20 @@ def test_specify_task_happy_path(kanban_home):
     assert "**Goal**" in (task.body or "")
 
 
+@pytest.mark.parametrize(("task_config", "explicit", "expected"), [
+    ({"timeout": 900}, None, 900),  # configured auxiliary.triage_specifier.timeout is honoured
+    ({}, None, 120),  # no config: the specifier's own default
+    ({"timeout": 900}, 42, 42),  # an explicit caller timeout still wins
+])
+def test_specify_timeout_follows_task_config(kanban_home, task_config, explicit, expected):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="rough", triage=True)
+    p, mock = _patch_aux_client("not json")
+    with p, patch("agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+        spec.specify_task(tid, timeout=explicit)
+    assert mock.call_args.kwargs["timeout"] == expected
+
+
 
 
 

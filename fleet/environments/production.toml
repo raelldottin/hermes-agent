@@ -1,12 +1,12 @@
 # Desired state for the production fleet. Change it only by a PR into fleet-stable.
 environment = "production"
-commit = "81929f460fa1bf4aa956b6e05cfa08792ab0852a"
+commit = "ef34146b2c0e0a320aa2deb8be9819b658e1dde8"
 source_dir = "~/.hermes/hermes-agent"
 hermes_home = "~/.hermes"
 # A commit reaches production only after it has run in every environment listed here.
 promote_from = ["canary"]
-tag = "fleet-stable-2026.10.20-2"
+tag = "fleet-stable-2026.10.26-1"
 # Disabled until a human approves. Enabling needs approved_by = "<who>" in the same PR.
 deploy = "enabled"
-# Approved in chat 2026-10-21; merging this PR is the operator's sign-off.
+# Approved in chat 2026-10-26 ("approve the merge, release and deploy for #7"); merging this PR is the sign-off.
 approved_by = "raelldottin"

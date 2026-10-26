@@ -256,3 +256,24 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+
+
+@pytest.mark.parametrize(("task_config", "explicit", "expected"), [
+    ({"timeout": 1800}, None, 1800),  # configured auxiliary.kanban_decomposer.timeout is honoured
+    ({}, None, 180),  # no config: the decomposer's own default
+    ({"timeout": 1800}, 42, 42),  # an explicit caller timeout still wins
+])
+def test_decompose_timeout_follows_task_config(kanban_home, task_config, explicit, expected):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="slow model", triage=True)
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client("not json") as call_llm, patch(
+                "agent.auxiliary_client._get_auxiliary_task_config", return_value=task_config):
+            decomp.decompose_task(tid, timeout=explicit)
+    finally:
+        for p in patches:
+            p.stop()
+    assert call_llm.call_args.kwargs["timeout"] == expected

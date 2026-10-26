@@ -143,6 +143,18 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
     }
 
 
+def _aux_timeout(aux_task: str, timeout: Optional[int], default: int) -> float:
+    """The caller's timeout, else ``auxiliary.<aux_task>.timeout``, else *default*.
+
+    An explicit ``call_llm(timeout=...)`` beats config, so a hard-coded default here used to hide
+    the configured timeout (a slow reasoning model then timed out on every decompose attempt).
+    """
+    if timeout:
+        return timeout
+    from agent.auxiliary_client import _get_task_timeout
+    return _get_task_timeout(aux_task, default)
+
+
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
               max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
@@ -203,7 +215,7 @@ def specify_task(
     raw, reason = _call_aux(
         "specify", task_id, aux_task="triage_specifier", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(**_task_prompt_fields(task)),
-        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS, timeout=timeout or 120,
+        max_tokens=HERMES_KANBAN_SPECIFY_MAX_TOKENS, timeout=_aux_timeout("triage_specifier", timeout, 120),
     )
     if raw is None:
         return SpecifyOutcome(task_id, False, reason)
