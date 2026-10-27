@@ -87,6 +87,13 @@ def _validate_children_graph(children: list) -> None:
         raise ValueError("cyclic dependency detected in decomposed children list")
 
 
+def was_decomposed(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True once ``task_id`` has fanned out; the ``decomposed`` event survives re-triage and unlinking."""
+    return conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1", (task_id,),
+    ).fetchone() is not None
+
+
 def decompose_triage_task(
     conn: sqlite3.Connection, task_id: str, *, root_assignee: Optional[str], children: list[dict],
     author: Optional[str] = None, auto_promote: bool = True,
@@ -122,10 +129,7 @@ def decompose_triage_task(
             return None
         # Dependency links alone do not imply lineage. The completion event is
         # committed with the graph, and survives re-triage or unlinking.
-        if conn.execute(
-            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'decomposed' LIMIT 1",
-            (task_id,),
-        ).fetchone():
+        if was_decomposed(conn, task_id):
             return None
         child_ids = [
             _insert_decomposed_child(conn, task_id, root_row, child, author, now)

@@ -23,7 +23,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from hermes_cli import kanban_db as kb
-from hermes_cli.kanban_db_graph import decompose_triage_task
+from hermes_cli.kanban_db_graph import decompose_triage_task, was_decomposed
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import profiles as profiles_mod
 from hermes_cli.kanban_specify import (
@@ -312,6 +312,11 @@ def decompose_task(
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
+    # A re-triaged root that already fanned out is waiting on a human, not the decomposer: skip
+    # before the LLM call (the DB would refuse the graph, and a single-task reply would promote it).
+    with kbc.connect_closing() as conn:
+        if was_decomposed(conn, task_id):
+            return DecomposeOutcome(task_id, False, "task already decomposed")
 
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
