@@ -256,6 +256,32 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert outcome.ok is False
 
 
+@pytest.mark.parametrize("fanout", [True, False])
+def test_decompose_skips_retriaged_root_before_llm_call(kanban_home, fanout):
+    """A root that already fanned out and was parked back in triage is waiting on a human:
+    no LLM call, no promotion, whatever the model would have answered."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="gate root", triage=True)
+        with kbc.write_txn(conn):
+            kb._append_event(conn, tid, "decomposed", {"child_ids": ["t_old"], "root_assignee": None})
+
+    reply = jsonlib.dumps({"fanout": fanout, "title": "rewritten", "body": "b",
+                           "tasks": [{"title": "again", "body": "", "parents": []}]})
+    patches = _patch_list_profiles(["orchestrator"])
+    for p in patches:
+        p.start()
+    try:
+        with _patch_aux_client(reply) as llm:
+            outcome = decomp.decompose_task(tid, author="me")
+    finally:
+        for p in patches:
+            p.stop()
+
+    assert (outcome.ok, outcome.reason) == (False, "task already decomposed")
+    llm.assert_not_called()
+    with kbc.connect() as conn:
+        root = kb.get_task(conn, tid)
+    assert (root.status, root.title) == ("triage", "gate root")
 
 
 @pytest.mark.parametrize(("task_config", "explicit", "expected"), [
